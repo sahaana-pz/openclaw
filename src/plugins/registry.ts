@@ -15,6 +15,7 @@ import {
   NODE_SYSTEM_RUN_COMMANDS,
 } from "../infra/node-commands.js";
 import { normalizePluginGatewayMethodScope } from "../shared/gateway-method-policy.js";
+import { normalizeOptionalString } from "../shared/string-coerce.js";
 import { resolveUserPath } from "../utils.js";
 import { buildPluginApi } from "./api-builder.js";
 import { registerPluginCommand, validatePluginCommandDefinition } from "./command-registration.js";
@@ -46,6 +47,7 @@ import {
   stripPromptMutationFieldsFromLegacyHookResult,
 } from "./types.js";
 import type {
+  CliBackendPlugin,
   ImageGenerationProviderPlugin,
   MusicGenerationProviderPlugin,
   RealtimeTranscriptionProviderPlugin,
@@ -136,6 +138,14 @@ export type PluginProviderRegistration = {
   pluginId: string;
   pluginName?: string;
   provider: ProviderPlugin;
+  source: string;
+  rootDir?: string;
+};
+
+export type PluginCliBackendRegistration = {
+  pluginId: string;
+  pluginName?: string;
+  backend: CliBackendPlugin;
   source: string;
   rootDir?: string;
 };
@@ -252,6 +262,7 @@ export type PluginRecord = {
   toolNames: string[];
   hookNames: string[];
   channelIds: string[];
+  cliBackendIds: string[];
   providerIds: string[];
   speechProviderIds: string[];
   realtimeTranscriptionProviderIds: string[];
@@ -284,6 +295,7 @@ export type PluginRegistry = {
   channels: PluginChannelRegistration[];
   channelSetups: PluginChannelSetupRegistration[];
   providers: PluginProviderRegistration[];
+  cliBackends?: PluginCliBackendRegistration[];
   speechProviders: PluginSpeechProviderRegistration[];
   realtimeTranscriptionProviders: PluginRealtimeTranscriptionProviderRegistration[];
   realtimeVoiceProviders: PluginRealtimeVoiceProviderRegistration[];
@@ -676,6 +688,40 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     });
   };
 
+  const registerCliBackend = (record: PluginRecord, backend: CliBackendPlugin) => {
+    const id = backend.id.trim();
+    if (!id) {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: "cli backend registration missing id",
+      });
+      return;
+    }
+    const existing = (registry.cliBackends ?? []).find((entry) => entry.backend.id === id);
+    if (existing) {
+      pushDiagnostic({
+        level: "error",
+        pluginId: record.id,
+        source: record.source,
+        message: `cli backend already registered: ${id} (${existing.pluginId})`,
+      });
+      return;
+    }
+    (registry.cliBackends ??= []).push({
+      pluginId: record.id,
+      pluginName: record.name,
+      backend: {
+        ...backend,
+        id,
+      },
+      source: record.source,
+      rootDir: record.rootDir,
+    });
+    record.cliBackendIds.push(id);
+  };
+
   const registerUniqueProviderLike = <
     T extends { id: string },
     R extends PluginOwnedProviderRegistration<T>,
@@ -956,7 +1002,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
       command: {
         ...nodeCommand,
         command,
-        cap: nodeCommand.cap?.trim() || undefined,
+        cap: normalizeOptionalString(nodeCommand.cap),
       },
       source: record.source,
       rootDir: record.rootDir,
@@ -1206,6 +1252,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
               registerGatewayMethod: (method, handler, opts) =>
                 registerGatewayMethod(record, method, handler, opts),
               registerService: (service) => registerService(record, service),
+              registerCliBackend: (backend) => registerCliBackend(record, backend),
               registerReload: (registration) => registerReload(record, registration),
               registerNodeHostCommand: (command) => registerNodeHostCommand(record, command),
               registerSecurityAuditCollector: (collector) =>
@@ -1403,6 +1450,7 @@ export function createPluginRegistry(registryParams: PluginRegistryParams) {
     registerTool,
     registerChannel,
     registerProvider,
+    registerCliBackend,
     registerSpeechProvider,
     registerRealtimeTranscriptionProvider,
     registerRealtimeVoiceProvider,
